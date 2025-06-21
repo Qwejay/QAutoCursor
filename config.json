@@ -1,0 +1,19 @@
+{
+    "action_mouse": true,
+    "mouse_action_type": "\u5de6\u952e\u5355\u51fb",
+    "action_key": false,
+    "key_entry": "",
+    "action_sound": true,
+    "sound_choice": "1.wav",
+    "stop_on_find": false,
+    "confidence": 0.9,
+    "interval": 5.0,
+    "start_hotkey": "Alt-1",
+    "stop_hotkey": "Alt-2",
+    "targets": [
+        {
+            "image_path": "targets\\target_0.png",
+            "offset": null
+        }
+    ]
+}

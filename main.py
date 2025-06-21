@@ -1,117 +1,44 @@
 import os
-import sys
+import json
 import time
+import traceback
+import tempfile
 from PIL import ImageGrab, Image, ImageTk, ImageDraw
-import pytesseract
-import cv2
-import numpy as np
 import pyautogui
-import easyocr
 import threading
 import queue
 import tkinter as tk
-from tkinter import scrolledtext, filedialog, simpledialog, ttk
-import platform
-import winsound
+from tkinter import scrolledtext, filedialog, ttk
+from playsound import playsound
 from pynput import keyboard
+import sys
 
 # 全局队列，用于在不同线程间安全通信
 hotkey_queue = queue.Queue()
 
-# 自动检测tesseract路径
-def auto_detect_tesseract():
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
-        if sys.platform.startswith('win'):
-            possible = [
-                r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-                r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
-            ]
-            for path in possible:
-                if os.path.exists(path):
-                    pytesseract.pytesseract.tesseract_cmd = path
-                    return True
-            return False
-        else: # mac/linux 默认在PATH
-            return True
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
     except Exception:
-        return False
+        base_path = os.path.abspath(".")
 
-# 智能截图（全屏）
-def capture_screen():
-    try:
-        img_pil = ImageGrab.grab()
-        # easyocr可以直接处理PIL图像或numpy数组，无需转为cv2格式
-        return np.array(img_pil)
-    except Exception as e:
-        print(f"\n[ERROR] 截图失败: {e}")
-        return None
-
-# OCR识别 (easyocr)
-def ocr_image(reader, img_np):
-    try:
-        # readtext返回 [[bbox, text, confidence], ...]
-        return reader.readtext(img_np, detail=1)
-    except Exception as e:
-        print(f"\n[ERROR] OCR识别异常: {e}")
-        return []
-
-# 自动监控并点击（极简版, 使用easyocr）
-def find_and_click_loop(reader, target_text):
-    print(f"\n[*] 开始监控屏幕，寻找文本: '{target_text}'")
-    print("[*] 按 Ctrl+C 可随时停止。")
-    pyautogui.FAILSAFE = True
-    
-    while True:
-        try:
-            img = capture_screen()
-            if img is None:
-                time.sleep(2)
-                continue
-            
-            results = ocr_image(reader, img)
-            for (bbox, text, prob) in results:
-                if target_text.lower() in text.lower():
-                    # bbox是四个点的列表，取左上和右下计算中心点
-                    (tl, tr, br, bl) = bbox
-                    cx = int((tl[0] + br[0]) / 2)
-                    cy = int((tl[1] + br[1]) / 2)
-                    
-                    print(f"\n[SUCCESS] 找到目标! 文本: '{text}', 坐标: ({cx},{cy}), 相似度: {prob:.2f}")
-                    pyautogui.moveTo(cx, cy, duration=0.5, tween=pyautogui.easeInOutQuad)
-                    pyautogui.click()
-                    print("[*] 点击完成，任务结束。")
-                    return
-            
-            print(".", end="", flush=True)
-            time.sleep(1)
-
-        except KeyboardInterrupt:
-            print("\n\n[*] 用户中止操作。")
-            break
-        except Exception as e:
-            print(f"\n[ERROR] 循环中发生未知错误: {e}")
-            break
-
-# --- 核心功能 ---
-def capture_screen_region(region):
-    """截取屏幕指定区域的图像。"""
-    return np.array(ImageGrab.grab(bbox=region))
-
-def find_image_on_screen(template_image, confidence=0.8):
-    """在全屏上查找模板图像，返回Box(left, top, width, height)对象。"""
-    try:
-        location = pyautogui.locateOnScreen(template_image, confidence=confidence)
-        return location
-    except pyautogui.ImageNotFoundException:
-        return None
-    except Exception:
-        return None
+    return os.path.join(base_path, relative_path)
 
 # --- UI部分 ---
 class ImageAutoClickerApp:
     def __init__(self, master):
         self.master = master
-        self.master.title('QAutoCursor - 智能自动化 v1.0.2')
+        self.master.title('QAutoCursor - 智能自动化 v1.0.3')
+
+        try:
+            icon_path = resource_path("icon.ico")
+            self.master.iconbitmap(icon_path)
+        except Exception as e:
+            # Log the error but don't prevent the app from starting
+            self.log(f"警告: 无法加载图标 - {e}")
+
         self.master.geometry('500x720')
         self.master.configure(bg='#2E2E2E')
         self.master.resizable(False, False)
@@ -139,7 +66,7 @@ class ImageAutoClickerApp:
         self.confidence_var = tk.DoubleVar(value=0.9)
         self.interval_var = tk.DoubleVar(value=5.0)
         self.monitor_thread = None
-        self.sound_choice_var = tk.StringVar()
+        self.sound_choice_var = tk.StringVar(value="无")
         self.available_sounds = []
         self.stop_event = threading.Event()
         self.log_queue = queue.Queue()
@@ -148,18 +75,37 @@ class ImageAutoClickerApp:
         self.stop_hotkey_var = tk.StringVar(value='Alt-2')
         
         self.hotkey_listener = None
+        self.config_file = "config.json"
+        self.targets_dir = "targets"
+        self.sound_data = {} # To hold sound file paths
+        self.temp_sound_files = [] # To clean up on exit
 
+        self.load_available_sounds() # Load sounds before setting up UI
         self.setup_ui()
-        self.load_available_sounds()
+        self.load_config() # Load config after UI is setup
         self.apply_hotkeys(initial_setup=True)
         self.master.after(100, self.process_log_queue)
         self.master.after(100, self.process_hotkey_queue)
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def on_closing(self):
-        self.log("正在关闭应用...")
+        self.log("正在保存配置并关闭应用...")
+        self.save_config()
+        self.stop_event.set()
+
+        # Clean up temporary sound files
+        for temp_path in self.temp_sound_files:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    self.log(f"信息: 已清理临时声音文件 {os.path.basename(temp_path)}")
+            except Exception as e:
+                self.log(f"警告: 清理临时文件失败 {temp_path} - {e}")
+
         if self.hotkey_listener and self.hotkey_listener.is_alive():
             self.hotkey_listener.stop()
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=1.0)
         self.master.destroy()
 
     def parse_hotkey(self, key_string):
@@ -216,6 +162,17 @@ class ImageAutoClickerApp:
             self.log(f"全局快捷键{log_msg}: {start_key_str} 启动, {stop_key_str} 停止。")
         except Exception as e:
             self.log(f"错误: 设置快捷键失败 - {e}")
+
+    def find_image_on_screen(self, template_image, confidence=0.8):
+        """在全屏上查找模板图像，返回Box(left, top, width, height)对象。"""
+        try:
+            location = pyautogui.locateOnScreen(template_image, confidence=confidence)
+            return location
+        except pyautogui.ImageNotFoundException:
+            return None
+        except Exception as e:
+            self.log(f"查找图像时发生未知错误: {e}")
+            return None
 
     def process_hotkey_queue(self):
         try:
@@ -329,10 +286,10 @@ class ImageAutoClickerApp:
         sound_frame = tk.Frame(action_frame, bg='#2E2E2E')
         sound_frame.pack(fill='x', pady=2)
         tk.Checkbutton(sound_frame, text='播放提示音', variable=self.action_sound_var, bg='#2E2E2E', fg='white', selectcolor='#BF3A3A', activebackground='#2E2E2E', activeforeground='white', command=self.toggle_sound_input).pack(side=tk.LEFT)
-        self.sound_option_menu = tk.OptionMenu(sound_frame, self.sound_choice_var, *['初始化...'])
-        self.sound_option_menu.config(bg='#3C3C3C', fg='white', activebackground='#555555', relief=tk.FLAT, highlightthickness=0, width=20)
-        self.sound_option_menu["menu"].config(bg='#3C3C3C', fg='white')
-        self.sound_option_menu.pack(side=tk.LEFT, padx=5)
+        self.sound_menu = tk.OptionMenu(sound_frame, self.sound_choice_var, *self.available_sounds)
+        self.sound_menu.config(bg='#3C3C3C', fg='white', activebackground='#555555', relief=tk.FLAT, highlightthickness=0, width=20)
+        self.sound_menu["menu"].config(bg='#3C3C3C', fg='white')
+        self.sound_menu.pack(side=tk.LEFT, padx=5)
         self.toggle_sound_input()
 
         # --- 2. 任务设置 ---
@@ -509,8 +466,9 @@ class ImageAutoClickerApp:
             self.log("错误: 请先添加至少一个目标图像。")
             return
 
-        # Hide UI list
-        self.target_list_frame.pack_forget()
+        # Hide UI list by replacing its content
+        for widget in self.target_list_frame.winfo_children():
+            widget.destroy()
         hidden_label = tk.Label(self.target_list_frame, text="\n...任务运行中...\n", bg='#3C3C3C', fg='grey', font=('Arial', 14))
         hidden_label.pack(fill='x', pady=50)
 
@@ -521,7 +479,6 @@ class ImageAutoClickerApp:
         key_to_press = self.key_entry.get()
         stop_on_find = self.stop_on_find_var.get()
         confidence_level = self.confidence_var.get()
-        sound_choice = self.sound_choice_var.get()
         interval = self.interval_var.get()
 
         self.start_btn.config(state=tk.DISABLED)
@@ -530,7 +487,7 @@ class ImageAutoClickerApp:
         self.stop_event.clear()
         self.monitor_thread = threading.Thread(
             target=self.monitor_loop,
-            args=(action_mouse, mouse_action_type, action_key, key_to_press, action_sound, stop_on_find, confidence_level, sound_choice, interval, active_targets_info),
+            args=(action_mouse, mouse_action_type, action_key, key_to_press, action_sound, stop_on_find, confidence_level, interval, active_targets_info),
             daemon=True
         )
         self.monitor_thread.start()
@@ -546,111 +503,137 @@ class ImageAutoClickerApp:
         # Restore UI list
         for widget in self.target_list_frame.winfo_children():
             widget.destroy()
-        self.target_list_frame.pack(fill='x')
         self.update_target_list_ui()
         
         self.log("任务已停止。")
 
-    def monitor_loop(self, action_mouse, mouse_action_type, action_key, key_to_press, action_sound, stop_on_find, confidence_level, sound_choice, interval, active_targets):
+    def monitor_loop(self, action_mouse, mouse_action_type, action_key, key_to_press, action_sound, stop_on_find, confidence_level, interval, active_targets):
         self.log(f"任务已启动，正在扫描屏幕 (相似度阈值: {confidence_level:.2f}, 间隔: {interval}s)...")
         while not self.stop_event.is_set():
-            
-            found_match_in_scan = False
-            for target_info in active_targets:
-                location_box = find_image_on_screen(target_info['image'], confidence=confidence_level)
+            try:
+                found_match_in_scan = False
+                for target_info in active_targets:
+                    if self.stop_event.is_set():
+                        break
+
+                    location_box = self.find_image_on_screen(target_info['image'], confidence=confidence_level)
+                    
+                    if location_box:
+                        if self.stop_event.is_set():
+                            break
+
+                        if target_info['offset']:
+                            target_x = location_box.left + target_info['offset'][0]
+                            target_y = location_box.top + target_info['offset'][1]
+                        else: # Default to center
+                            target_x = location_box.left + location_box.width / 2
+                            target_y = location_box.top + location_box.height / 2
+                        
+                        target_point = (int(target_x), int(target_y))
+                        self.log(f"已找到目标 {target_info['index'] + 1}，操作点: {target_point}")
+
+                        if action_mouse:
+                            if mouse_action_type == '左键单击':
+                                pyautogui.click(target_point)
+                                self.log("已执行: 鼠标左键单击。")
+                            elif mouse_action_type == '右键单击':
+                                pyautogui.rightClick(target_point)
+                                self.log("已执行: 鼠标右键单击。")
+                            elif mouse_action_type == '双击':
+                                pyautogui.doubleClick(target_point)
+                                self.log("已执行: 鼠标双击。")
+                            elif mouse_action_type == '移动至目标':
+                                pyautogui.moveTo(target_point, duration=0.3)
+                                self.log("已执行: 移动鼠标至目标。")
+                        
+                        if action_sound:
+                            sound_to_play = self.sound_choice_var.get()
+                            self.log(f"Debug: 触发声音操作. 选择: '{sound_to_play}'")
+                            if sound_to_play in self.sound_data:
+                                try:
+                                    sound_path = self.sound_data[sound_to_play]
+                                    self.log(f"Debug: 准备播放 '{sound_to_play}' from path '{sound_path}'。")
+                                    # Run in a separate thread to avoid blocking the main loop
+                                    threading.Thread(target=playsound, args=(sound_path,), daemon=True).start()
+                                except Exception as e:
+                                    tb_str = traceback.format_exc()
+                                    self.log(f"严重错误: playsound播放失败. 错误: {e}\nTraceback:\n{tb_str}")
+
+                        if action_key:
+                            pyautogui.press(key_to_press)
+                            self.log(f"已执行: 键盘输入 '{key_to_press}'。")
+                        
+                        found_match_in_scan = True
+                        break # Stop scanning other targets in this cycle
                 
-                if location_box:
-                    if target_info['offset']:
-                        target_x = location_box.left + target_info['offset'][0]
-                        target_y = location_box.top + target_info['offset'][1]
-                    else: # Default to center
-                        target_x = location_box.left + location_box.width / 2
-                        target_y = location_box.top + location_box.height / 2
-                    
-                    target_point = (target_x, target_y)
-                    self.log(f"已找到目标 {target_info['index'] + 1}，操作点: {target_point}")
-
-                    if action_mouse:
-                        if mouse_action_type == '左键单击':
-                            pyautogui.click(target_point)
-                            self.log("已执行: 鼠标左键单击。")
-                        elif mouse_action_type == '右键单击':
-                            pyautogui.rightClick(target_point)
-                            self.log("已执行: 鼠标右键单击。")
-                        elif mouse_action_type == '双击':
-                            pyautogui.doubleClick(target_point)
-                            self.log("已执行: 鼠标双击。")
-                        elif mouse_action_type == '移动至目标':
-                            pyautogui.moveTo(target_point, duration=0.3)
-                            self.log("已执行: 移动鼠标至目标。")
-                    
-                    if action_sound and platform.system() == "Windows":
-                        sound_to_play = sound_choice
-                        if sound_to_play and sound_to_play != '无可用声音':
-                            try:
-                                flags = winsound.SND_ASYNC
-                                if sound_to_play.lower().endswith('.wav'):
-                                    flags |= winsound.SND_FILENAME
-                                    self.log(f"已播放提示音: {sound_to_play}。")
-                                else: # System sound
-                                    flags |= winsound.SND_ALIAS
-                                    self.log(f"已播放系统提示音: {sound_to_play}。")
-                                winsound.PlaySound(sound_to_play, flags)
-                            except Exception as e:
-                                self.log(f"错误: 播放声音失败 - {e}")
-
-                    if action_key:
-                        pyautogui.press(key_to_press)
-                        self.log(f"已执行: 键盘输入 '{key_to_press}'。")
-                    
-                    found_match_in_scan = True
-                    break # Stop scanning other targets in this cycle
-            
-            if found_match_in_scan:
-                if stop_on_find:
-                    self.log("操作完成，任务已停止。")
-                    self.log_queue.put("TASK_COMPLETE")
+                if self.stop_event.is_set():
                     break
+
+                if found_match_in_scan:
+                    if stop_on_find:
+                        self.log("操作完成，任务即将停止。")
+                        self.log_queue.put("TASK_COMPLETE")
+                        break
+                    else:
+                        self.log("操作完成，继续扫描...")
+                        time.sleep(interval)
                 else:
-                    self.log("操作完成，继续扫描...")
-                    time.sleep(interval)
-            else:
-                self.log(f"未在屏幕上找到任何目标(相似度>{confidence_level:.2f})，{interval}秒后重试...")
-                time.sleep(interval)
+                    # To avoid log spam, we check the stop event before logging the "not found" message and sleeping.
+                    if not self.stop_event.is_set():
+                        self.log(f"未在屏幕上找到任何目标，{interval}秒后重试...")
+                        time.sleep(interval)
+
+            except Exception as e:
+                self.log(f"监控循环发生严重错误: {e}")
+                if not self.stop_event.is_set():
+                    time.sleep(interval) # Wait before retrying
 
     def load_available_sounds(self):
-        """扫描并加载可用的声音文件和系统声音。"""
-        if platform.system() != "Windows":
-            self.available_sounds = ['无可用声音']
-            self.sound_choice_var.set(self.available_sounds[0])
-            self.update_sound_menu()
-            return
-
-        self.available_sounds = []
+        """扫描并加载可用的声音文件。"""
+        self.available_sounds = ["无"]
+        self.sound_data = {} # Clear previous data
         
-        # 扫描本地.wav文件
+        # 扫描并加载本地.wav文件
         try:
-            local_wavs = [f for f in os.listdir('.') if f.lower().endswith('.wav')]
-            if local_wavs:
-                self.available_sounds.extend(sorted(local_wavs))
-        except FileNotFoundError:
-            self.log("警告: 无法扫描本地WAV文件目录。")
-        
-        if self.available_sounds:
-            self.sound_choice_var.set(self.available_sounds[0])
-        else:
-            self.available_sounds = ['无可用声音']
-            self.sound_choice_var.set(self.available_sounds[0])
-        
-        self.update_sound_menu()
+            scan_dir = '.'
+            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                scan_dir = sys._MEIPASS
 
-    def update_sound_menu(self):
-        """Helper function to update the OptionMenu."""
-        if hasattr(self, 'sound_option_menu'):
-            menu = self.sound_option_menu['menu']
+            local_wavs = [f for f in os.listdir(scan_dir) if f.lower().endswith('.wav')]
+            if local_wavs:
+                for wav_file in local_wavs:
+                    try:
+                        # Extract the sound from the package to a real temporary file
+                        packaged_path = resource_path(wav_file)
+                        with open(packaged_path, 'rb') as f_in:
+                            data = f_in.read()
+                        
+                        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_f_out:
+                            temp_f_out.write(data)
+                            real_path = temp_f_out.name
+
+                        self.sound_data[wav_file] = real_path
+                        self.temp_sound_files.append(real_path)
+                        self.available_sounds.append(wav_file)
+                        self.log(f"信息: 已解包 '{wav_file}' 到临时文件 '{os.path.basename(real_path)}'。")
+
+                    except Exception as e:
+                        self.log(f"警告: 无法处理WAV文件 '{wav_file}' - {e}")
+        except Exception as e:
+            self.log(f"警告: 扫描本地WAV文件失败 - {e}")
+        
+        # 更新UI
+        if hasattr(self, 'sound_menu'):
+            menu = self.sound_menu['menu']
             menu.delete(0, 'end')
             for sound in self.available_sounds:
                 menu.add_command(label=sound, command=lambda value=sound: self.sound_choice_var.set(value))
+            
+            current_sound = self.sound_choice_var.get()
+            if current_sound not in self.available_sounds:
+                self.sound_choice_var.set(self.available_sounds[0])
+        else:
+            self.log("错误: sound_menu 未初始化。")
 
     def toggle_mouse_input(self):
         state = tk.NORMAL if self.action_mouse_var.get() else tk.DISABLED
@@ -664,8 +647,8 @@ class ImageAutoClickerApp:
 
     def toggle_sound_input(self):
         state = tk.NORMAL if self.action_sound_var.get() else tk.DISABLED
-        if hasattr(self, 'sound_option_menu'):
-            self.sound_option_menu.config(state=state)
+        if hasattr(self, 'sound_menu'):
+            self.sound_menu.config(state=state)
 
     def snip_screen(self):
         self.master.withdraw()
@@ -681,6 +664,86 @@ class ImageAutoClickerApp:
             self.log("屏幕截图已取消。")
             
         self.master.deiconify()
+
+    def save_config(self):
+        """Saves current settings and targets to a JSON file."""
+        if not os.path.exists(self.targets_dir):
+            os.makedirs(self.targets_dir)
+
+        target_configs = []
+        for i, target in enumerate(self.targets):
+            image_path = os.path.join(self.targets_dir, f"target_{i}.png")
+            target['image'].save(image_path)
+            target_configs.append({
+                'image_path': image_path,
+                'offset': target['offset']
+            })
+
+        config = {
+            "action_mouse": self.action_mouse_var.get(),
+            "mouse_action_type": self.mouse_action_type_var.get(),
+            "action_key": self.action_key_var.get(),
+            "key_entry": self.key_entry.get(),
+            "action_sound": self.action_sound_var.get(),
+            "sound_choice": self.sound_choice_var.get(),
+            "stop_on_find": self.stop_on_find_var.get(),
+            "confidence": self.confidence_var.get(),
+            "interval": self.interval_var.get(),
+            "start_hotkey": self.start_hotkey_var.get(),
+            "stop_hotkey": self.stop_hotkey_var.get(),
+            "targets": target_configs
+        }
+
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(config, f, indent=4)
+            self.log("配置已成功保存。")
+        except Exception as e:
+            self.log(f"错误: 保存配置失败 - {e}")
+
+    def load_config(self):
+        """Loads settings and targets from the JSON file."""
+        if not os.path.exists(self.config_file):
+            self.log("未找到配置文件，使用默认设置。")
+            return
+        
+        try:
+            with open(self.config_file, 'r') as f:
+                config = json.load(f)
+
+            self.action_mouse_var.set(config.get("action_mouse", True))
+            self.mouse_action_type_var.set(config.get("mouse_action_type", "左键单击"))
+            self.action_key_var.set(config.get("action_key", False))
+            self.key_entry.delete(0, tk.END)
+            self.key_entry.insert(0, config.get("key_entry", "enter"))
+            self.action_sound_var.set(config.get("action_sound", True))
+            self.sound_choice_var.set(config.get("sound_choice", ""))
+            self.stop_on_find_var.set(config.get("stop_on_find", False))
+            self.confidence_var.set(config.get("confidence", 0.9))
+            self.interval_var.set(config.get("interval", 5.0))
+            self.start_hotkey_var.set(config.get("start_hotkey", "Alt-1"))
+            self.stop_hotkey_var.set(config.get("stop_hotkey", "Alt-2"))
+
+            # Manually update UI state based on loaded values
+            self.toggle_mouse_input()
+            self.toggle_key_input()
+            self.toggle_sound_input()
+
+            for target_config in config.get("targets", []):
+                image_path = target_config.get("image_path")
+                if image_path and os.path.exists(image_path):
+                    new_target = {
+                        'image': Image.open(image_path),
+                        'image_tk': None,
+                        'offset': target_config.get('offset'),
+                    }
+                    self.targets.append(new_target)
+            
+            self.update_target_list_ui()
+            self.log("配置已成功加载。")
+
+        except Exception as e:
+            self.log(f"错误: 加载配置失败 - {e}")
 
 class ScreenSnipper:
     def __init__(self):
@@ -714,6 +777,10 @@ class ScreenSnipper:
         x1, y1 = min(self.start_x, end_x), min(self.start_y, end_y)
         x2, y2 = max(self.start_x, end_x), max(self.start_y, end_y)
         self.region = (x1, y1, x2, y2)
+        if (x2 - x1) > 0 and (y2 - y1) > 0:
+            self.region = (int(x1), int(y1), int(x2), int(y2))
+        else:
+            self.region = None # Invalid region
         self.root.quit()
         self.root.destroy()
 
