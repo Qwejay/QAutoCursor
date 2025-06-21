@@ -1,0 +1,6 @@
+# pytesseract # No longer needed
+opencv-python
+Pillow
+pyautogui
+numpy
+# easyocr is no longer needed 
