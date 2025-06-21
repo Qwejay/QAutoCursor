@@ -1,6 +1,7 @@
 # pytesseract # No longer needed
-opencv-python
-Pillow
-pyautogui
-numpy
+opencv-python==4.9.0.80
+Pillow==10.2.0
+pyautogui==0.9.54
+numpy==1.26.4
 # easyocr is no longer needed 
+pynput==1.7.6 
