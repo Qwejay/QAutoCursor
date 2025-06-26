@@ -1,9 +1,7 @@
-# pytesseract # No longer needed
 opencv-python==4.9.0.80
 Pillow
 pyautogui
 numpy==1.26.4
-# easyocr is no longer needed 
 pynput
 pyinstaller
 playsound==1.2.2 
