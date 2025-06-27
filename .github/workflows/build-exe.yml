@@ -30,8 +30,7 @@ jobs:
         run: |
           pip install pyinstaller
           pyinstaller --noconfirm --onefile --windowed --icon=icon.ico --add-data "targets;targets" main.py
-          $TAG_NAME=${{ github.ref_name }}
-          mv dist/main.exe dist/QAutoCursor-$TAG_NAME.exe
+          mv dist/main.exe dist/QAutoCursor-${{ github.ref_name }}.exe
 
       - name: Upload EXE to Release
         uses: softprops/action-gh-release@v1
