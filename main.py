@@ -55,7 +55,7 @@ class ImageAutoClickerApp:
     def __init__(self, master):
         self.log_queue = queue.Queue()  # 必须最先初始化
         self.master = master
-        self.master.title('QAutoCursor - 智能自动化 v1.0.3')
+        self.master.title('QAutoCursor - 智能自动化 v1.0.4')
 
         try:
             icon_path = resource_path("icon.ico")
@@ -180,8 +180,8 @@ class ImageAutoClickerApp:
         self.sound_data = {} # To hold sound file paths
         self.temp_sound_files = [] # To clean up on exit
 
-        self.load_available_sounds() # Load sounds before setting up UI
         self.setup_ui()
+        self.load_available_sounds() # Load sounds after setting up UI
         self.load_config() # Load config after UI is setup
         self.apply_hotkeys(initial_setup=True)
         self.master.after(100, self.process_log_queue)
@@ -689,7 +689,9 @@ class ImageAutoClickerApp:
                                     sound_error()
                                 elif style == '成功':
                                     sound_success()
-                                self.log(f"已播放内置声音：{style}")
+                                elif style in self.sound_data:
+                                    playsound(self.sound_data[style], block=False)
+                                self.log(f"已播放声音：{style}")
                             except Exception as e:
                                 tb_str = traceback.format_exc()
                                 self.log(f"严重错误: 系统Beep播放失败. 错误: {e}\nTraceback:\n{tb_str}")
@@ -725,7 +727,8 @@ class ImageAutoClickerApp:
 
     def load_available_sounds(self):
         """扫描并加载可用的声音文件。"""
-        self.available_sounds = ["无"]
+        # 始终包含内置声音选项
+        self.available_sounds = ["叮叮", "升调", "降调", "错误", "成功", "无"]
         self.sound_data = {} # Clear previous data
         
         # 扫描并加载本地.wav文件
@@ -749,6 +752,7 @@ class ImageAutoClickerApp:
 
                         self.sound_data[wav_file] = real_path
                         self.temp_sound_files.append(real_path)
+                        # wav文件追加到菜单末尾
                         self.available_sounds.append(wav_file)
                         self.log(f"信息: 已解包 '{wav_file}' 到临时文件 '{os.path.basename(real_path)}'。")
 
