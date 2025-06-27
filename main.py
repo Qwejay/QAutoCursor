@@ -12,12 +12,10 @@ from tkinter import scrolledtext, filedialog, ttk
 from playsound import playsound
 from pynput import keyboard
 import sys
-import winsound  # 新增
+import winsound
 
-# 全局队列，用于在不同线程间安全通信
 hotkey_queue = queue.Queue()
 
-# ====== 内置声音风格函数 ======
 def sound_dingding():
     winsound.Beep(1000, 120)
     winsound.Beep(1500, 120)
@@ -139,7 +137,7 @@ class ImageAutoClickerApp:
             }
         })
         style.theme_use("minimal")
-        # 圆角效果（仅限Windows原生ttk，部分平台可能不生效）
+
         try:
             style.element_create("RoundedButton", "from", "clam")
             style.layout("Rounded.TButton", [
@@ -922,7 +920,7 @@ class ScreenSnipper:
         self.root.destroy()
 
     def on_right_click_cancel(self, event):
-        # 右键取消截图，并阻止事件传递到桌面
+
         self.region = None
         self.root.quit()
         self.root.destroy()
