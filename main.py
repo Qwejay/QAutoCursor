@@ -53,7 +53,7 @@ class ImageAutoClickerApp:
     def __init__(self, master):
         self.log_queue = queue.Queue()  # 必须最先初始化
         self.master = master
-        self.master.title('QAutoCursor - 智能自动化 v1.1.0')
+        self.master.title('QAutoCursor - 智能自动化 v1.1.1')
 
         try:
             icon_path = resource_path("icon.ico")
