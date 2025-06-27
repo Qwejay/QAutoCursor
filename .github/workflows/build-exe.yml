@@ -20,6 +20,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Ensure targets directory exists
+        run: mkdir targets
+
       - name: Build EXE with PyInstaller
         run: |
           pip install pyinstaller
