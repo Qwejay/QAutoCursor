@@ -27,6 +27,7 @@ jobs:
         run: mkdir targets
 
       - name: Build EXE with PyInstaller
+        shell: bash
         run: |
           pip install pyinstaller
           pyinstaller --noconfirm --onefile --windowed --icon=icon.ico --add-data "targets;targets" main.py
